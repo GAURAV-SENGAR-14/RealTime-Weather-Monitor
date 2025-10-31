@@ -72,6 +72,4 @@ Ensuring the system can easily support integrating **five or more data streams**
 
 ---
 
-**Author:** Rohan Chintalwar  
-**Course Code:** BCSE0352/BMICSE0352  
-**Department:** Information Technology
+
