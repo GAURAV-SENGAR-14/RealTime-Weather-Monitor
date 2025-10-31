@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Weather Monitor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0d0d1a;
+            color: #f0f0ff;
+            min-height: 100vh;
+        }
+
+        .weather-card {
+            background: rgba(30, 30, 50, 0.9);
+            border: 1px solid #3c3c66;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.1);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .weather-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 10px 15px rgba(0, 0, 0, 0.5);
+        }
+
+        .data-point {
+            background-color: #2a2a47;
+            color: #d1d5db;
+        }
+
+        .metric-value {
+            background: linear-gradient(90deg, #d8b4fe, #f97316);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-weight: 700;
+        }
+
+        .update-bar {
+            height: 4px;
+            background-color: #5b21b6;
+            animation: progress 5s linear infinite;
+        }
+
+        @keyframes progress {
+            0% { width: 0%; }
+            100% { width: 100%; }
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+    <div class="max-w-7xl mx-auto">
+        <header class="text-center mb-10">
+            <h1 class="text-3xl md:text-5xl font-extrabold metric-value inline-block">REAL-TIME WEATHER MONITOR</h1>
+            <p class="text-lg text-gray-400 mt-2">Displaying concurrent data streams from OpenWeatherMap API (Simulated)</p>
+            <div class="mt-4 text-sm text-gray-500 flex flex-col items-center justify-center space-y-2">
+                <div>Next Data Fetch Cycle: <span id="cycle-timer" class="font-mono text-purple-400">0:05</span></div>
+                <div class="update-bar rounded-full mt-1"></div>
+            </div>
+        </header>
+
+        <div class="mb-10 flex flex-col sm:flex-row items-center justify-center space-y-4 sm:space-y-0 sm:space-x-4">
+            <input type="text" id="city-input" placeholder="Enter city name (e.g., Chicago)"
+                   class="w-full sm:w-80 p-3 rounded-lg bg-gray-700 text-white placeholder-gray-400 focus:ring-2 focus:ring-purple-500 border-none transition duration-150">
+            <button id="add-city-button" onclick="addCity()"
+                    class="w-full sm:w-auto px-6 py-3 rounded-lg font-bold text-white shadow-lg 
+                           bg-purple-600 hover:bg-purple-700 active:bg-purple-800 transition duration-150 transform hover:scale-105">
+                Monitor New City
+            </button>
+        </div>
+
+        <div id="weather-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"></div>
+        
+        <div id="status-box" class="mt-12 p-4 bg-gray-800 border border-gray-700 rounded-lg shadow-xl hidden">
+            <p class="text-sm text-gray-300 font-mono">
+                <span class="text-green-400 font-bold">LOG:</span> <span id="status-message">System Backend (Java/MySQL/Docker) is online. Ready for API calls.</span>
+            </p>
+        </div>
+    </div>
+
+    <div id="alerts-container" class="fixed bottom-0 right-0 m-4 space-y-3 z-50 max-w-xs sm:max-w-sm"></div>
+
+    <script>
+        const API_KEY = 'a-mock-api-key-for-openweathermap';
+        const LOCATIONS = [
+            { id: 1, city: "Tokyo", country: "JP", temperature: 28, humidity: 65, condition: "Partly Cloudy", windSpeed: 5, pressure: 1012, cloudiness: 40 },
+            { id: 2, city: "London", country: "UK", temperature: 15, humidity: 88, condition: "Rainy", windSpeed: 12, pressure: 1005, cloudiness: 85 },
+            { id: 3, city: "New York", country: "US", temperature: 22, humidity: 55, condition: "Clear Sky", windSpeed: 8, pressure: 1018, cloudiness: 10 },
+            { id: 4, city: "Delhi", country: "IN", temperature: 32, humidity: 50, condition: "Sunny", windSpeed: 4, pressure: 1015, cloudiness: 0 },
+            { id: 5, city: "Dubai", country: "AE", temperature: 35, humidity: 30, condition: "Sunny", windSpeed: 10, pressure: 1010, cloudiness: 5 },
+            { id: 6, city: "Sydney", country: "AU", temperature: 18, humidity: 70, condition: "Overcast", windSpeed: 7, pressure: 1013, cloudiness: 60 },
+        ];
+        const ALERT_RULES = [
+            { type: 'Temperature', condition: '>=', value: 30, message: (city, val) => `⚠️ HEAT WARNING in ${city}: Temperature is ${val}°C!` },
+            { type: 'Temperature', condition: '<=', value: 10, message: (city, val) => `❄️ COLD ALERT in ${city}: Temperature dropped to ${val}°C!` },
+            { type: 'Humidity', condition: '>=', value: 85, message: (city, val) => `💧 HIGH HUMIDITY ALERT in ${city}: Humidity is ${val}%!` },
+            { type: 'Condition', condition: 'includes', value: 'Rainy', message: (city) => `☔ RAIN WARNING in ${city}: Expected conditions are Rainy.` },
+        ];
+        const UPDATE_INTERVAL_SECONDS = 30;
+        let secondsUntilNextUpdate = UPDATE_INTERVAL_SECONDS;
+        const weatherGrid = document.getElementById('weather-grid');
+        const cycleTimer = document.getElementById('cycle-timer');
+        const statusMessage = document.getElementById('status-message');
+        const statusBox = document.getElementById('status-box');
+        const alertsContainer = document.getElementById('alerts-container'); 
+
+        function generateMockWeatherData(city) {
+            const len = city.length;
+            let temp, hum, cond, country;
+            if (len % 3 === 0) { temp = Math.floor(Math.random() * 10) + 25; hum = Math.floor(Math.random() * 20) + 30; cond = "Sunny"; country = "US"; }
+            else if (len % 3 === 1) { temp = Math.floor(Math.random() * 10) + 15; hum = Math.floor(Math.random() * 20) + 60; cond = "Partly Cloudy"; country = "CA"; }
+            else { temp = Math.floor(Math.random() * 10) + 5; hum = Math.floor(Math.random() * 20) + 70; cond = "Overcast"; country = "DE"; }
+            const windSpeed = Math.floor(Math.random() * 15) + 2;
+            const pressure = Math.floor(Math.random() * 30) + 1000;
+            const cloudiness = Math.floor(Math.random() * 100);
+            const newId = LOCATIONS.reduce((max, loc) => Math.max(max, loc.id), 0) + 1;
+            return { id: newId, city, country, temperature: temp, humidity: hum, condition: cond, windSpeed, pressure, cloudiness };
+        }
+
+        function addCity() {
+            const inputElement = document.getElementById('city-input');
+            let cityName = inputElement.value.trim();
+            if (!cityName) { displayAlert("Please enter a city name to monitor.", 'error'); return; }
+            cityName = cityName.split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(' ');
+            if (LOCATIONS.some(loc => loc.city.toLowerCase() === cityName.toLowerCase())) { displayAlert(`${cityName} is already being monitored.`, 'warning'); inputElement.value = ''; return; }
+            statusMessage.textContent = `Simulating initial API lookup for ${cityName} using key: ${API_KEY.substring(0, 8)}...`; statusBox.classList.remove('hidden');
+            setTimeout(() => {
+                const newLocationData = generateMockWeatherData(cityName);
+                LOCATIONS.push(newLocationData);
+                renderLocation(newLocationData);
+                checkAlerts(newLocationData);
+                displayAlert(`Started real-time monitoring for ${cityName}.`, 'success');
+                statusMessage.textContent = `Successful data fetch for ${cityName}. System now monitoring ${LOCATIONS.length} locations.`;
+                inputElement.value = '';
+            }, 1500);
+        }
+
+        function checkAlerts(location) {
+            ALERT_RULES.forEach(rule => {
+                let triggered = false; let currentValue;
+                if (rule.type === 'Temperature') currentValue = location.temperature;
+                else if (rule.type === 'Humidity') currentValue = location.humidity;
+                else if (rule.type === 'Condition') currentValue = location.condition;
+                switch (rule.condition) {
+                    case '>=': triggered = currentValue >= rule.value; break;
+                    case '<=': triggered = currentValue <= rule.value; break;
+                    case 'includes': triggered = currentValue.includes(rule.value); break;
+                }
+                if (triggered) { const message = rule.message(location.city, currentValue); displayAlert(message, 'alert'); }
+            });
+        }
+
+        function displayAlert(message, type = 'alert') {
+            const alertElement = document.createElement('div');
+            let classes = 'p-4 rounded-lg text-white font-medium mb-3 transition-all duration-300 transform';
+            if (type === 'success') classes += ' bg-green-600 shadow-lg';
+            else if (type === 'warning') classes += ' bg-yellow-600 shadow-lg';
+            else if (type === 'error') classes += ' bg-red-600 shadow-lg';
+            else classes += ' bg-gradient-to-r from-pink-600 to-purple-600 shadow-xl';
+            alertElement.className = `${classes} opacity-0 translate-x-full`;
+            alertElement.innerHTML = `<p>${message}</p>`;
+            alertsContainer.appendChild(alertElement);
+            setTimeout(() => { alertElement.classList.remove('opacity-0', 'translate-x-full'); alertElement.classList.add('opacity-100', 'translate-x-0'); }, 50);
+            setTimeout(() => {
+                alertElement.classList.remove('opacity-100', 'translate-x-0');
+                alertElement.classList.add('opacity-0', 'translate-x-full');
+                setTimeout(() => { if (alertsContainer.contains(alertElement)) alertsContainer.removeChild(alertElement); }, 300);
+            }, 5000);
+        }
+
+        function fetchData() {
+            statusMessage.textContent = `Fetching data for ${LOCATIONS.length} locations using Java backend and multithreading...`; statusBox.classList.remove('hidden');
+            LOCATIONS.forEach(location => {
+                const tempChange = Math.floor(Math.random() * 7) - 3;
+                const humChange = Math.floor(Math.random() * 5) - 2;
+                location.temperature = Math.min(Math.max(location.temperature + tempChange, 0), 45);
+                location.humidity = Math.min(Math.max(location.humidity + humChange, 10), 99);
+                location.windSpeed = Math.min(Math.max(location.windSpeed + (Math.floor(Math.random() * 3) - 1), 1), 20);
+                location.pressure = Math.min(Math.max(location.pressure + (Math.floor(Math.random() * 5) - 2), 990), 1040);
+                location.cloudiness = Math.min(Math.max(location.cloudiness + (Math.floor(Math.random() * 11) - 5), 0), 100);
+                setTimeout(() => { renderLocation(location); checkAlerts(location); statusMessage.textContent = `Data for ${location.city} updated and persisted to MySQL.`; }, Math.random() * 1000);
+            });
+            setTimeout(() => { statusMessage.textContent = `All weather data streams processed and synchronized by Docker container at: ${new Date().toLocaleTimeString()}`; }, 1200);
+        }
+
+        function renderLocation(location) {
+            let card = document.getElementById(`card-${location.id}`);
+            if (!card) {
+                card = document.createElement('div');
+                card.id = `card-${location.id}`;
+                card.className = 'weather-card p-6 rounded-xl space-y-4';
+                card.innerHTML = `
+                    <div class="flex items-center justify-between border-b border-gray-700 pb-3 mb-3">
+                        <h2 class="text-2xl font-bold text-white">${location.city} <span class="text-sm font-light text-gray-400">(${location.country})</span></h2>
+                        <span id="condition-${location.id}" class="text-lg text-yellow-300">${location.condition}</span>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="data-point p-3 rounded-lg flex flex-col items-start">
+                            <span class="text-xs uppercase text-gray-400">Temperature</span>
+                            <span id="temp-${location.id}" class="text-4xl metric-value mt-1">${location.temperature}°C</span>
+                        </div>
+                        <div class="data-point p-3 rounded-lg flex flex-col items-start">
+                            <span class="text-xs uppercase text-gray-400">Humidity</span>
+                            <span id="humidity-${location.id}" class="text-4xl text-blue-300 mt-1">${location.humidity}%</span>
+                        </div>
+                    </div>
+                    <div class="pt-4 border-t border-gray-700 mt-4 space-y-2 text-sm">
+                        <div class="flex justify-between items-center text-gray-300"><span>Wind Speed:</span><span id="wind-${location.id}" class="font-bold text-lg text-purple-300">${location.windSpeed} km/h</span></div>
+                        <div class="flex justify-between items-center text-gray-300"><span>Pressure:</span><span id="pressure-${location.id}" class="font-bold text-lg text-purple-300">${location.pressure} hPa</span></div>
+                        <div class="flex justify-between items-center text-gray-300"><span>Cloudiness:</span><span id="cloud-${location.id}" class="font-bold text-lg text-purple-300">${location.cloudiness}%</span></div>
+                    </div>`;
+                weatherGrid.appendChild(card);
+            } else {
+                document.getElementById(`temp-${location.id}`).textContent = `${location.temperature}°C`;
+                document.getElementById(`humidity-${location.id}`).textContent = `${location.humidity}%`;
+                document.getElementById(`condition-${location.id}`).textContent = location.condition;
+                document.getElementById(`wind-${location.id}`).textContent = `${location.windSpeed} km/h`;
+                document.getElementById(`pressure-${location.id}`).textContent = `${location.pressure} hPa`;
+                document.getElementById(`cloud-${location.id}`).textContent = `${location.cloudiness}%`;
+            }
+        }
+
+        function countdownTimer() {
+            secondsUntilNextUpdate--;
+            const minutes = Math.floor(secondsUntilNextUpdate / 60);
+            const seconds = secondsUntilNextUpdate % 60;
+            const timeString = `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+            if (cycleTimer) cycleTimer.textContent = timeString;
+            if (secondsUntilNextUpdate <= 0) { secondsUntilNextUpdate = UPDATE_INTERVAL_SECONDS; fetchData(); }
+        }
+
+        window.onload = function() {
+            LOCATIONS.forEach(renderLocation);
+            fetchData();
+            setInterval(countdownTimer, 1000);
+            document.getElementById('city-input').addEventListener('keypress', function(e) { if (e.key === 'Enter') addCity(); });
+        }
+    </script>
+</body>
+</html>
